@@ -8,7 +8,7 @@ import unicodedata
 import io
 
 # ===============================
-# 기본 설정
+# Streamlit 기본 설정
 # ===============================
 st.set_page_config(
     page_title="극지식물 최적 EC 농도 연구",
@@ -34,48 +34,49 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
 # ===============================
-# 유틸: 한글 파일 찾기 (NFC/NFD 안전)
+# 유틸: 키워드 기반 한글 파일 탐색 (NFC/NFD 안전)
 # ===============================
-def find_file_by_name(directory: Path, target_name: str):
-    target_nfc = unicodedata.normalize("NFC", target_name)
-    target_nfd = unicodedata.normalize("NFD", target_name)
-
+def find_file_by_keywords(directory: Path, keywords: list):
     for f in directory.iterdir():
-        fname_nfc = unicodedata.normalize("NFC", f.name)
-        fname_nfd = unicodedata.normalize("NFD", f.name)
-        if fname_nfc == target_nfc or fname_nfd == target_nfd:
+        fname = unicodedata.normalize("NFC", f.name)
+        if all(k in fname for k in keywords):
             return f
     return None
 
 # ===============================
-# 데이터 로딩
+# 환경 데이터 로딩
 # ===============================
 @st.cache_data
 def load_environment_data():
-    school_files = {
-        "송도고": "송도고_환경데이터.csv",
-        "하늘고": "하늘고_환경데이터.csv",
-        "아라고": "아라고_환경데이터.csv",
-        "동산고": "동산고_환경데이터.csv",
-    }
-
+    schools = ["송도고", "하늘고", "아라고", "동산고"]
     env_data = {}
-    for school, fname in school_files.items():
-        file_path = find_file_by_name(DATA_DIR, fname)
+
+    for school in schools:
+        file_path = find_file_by_keywords(
+            DATA_DIR,
+            [school, "환경데이터"]
+        )
+
         if file_path is None:
-            st.error(f"환경 데이터 파일을 찾을 수 없습니다: {fname}")
+            st.error(f"환경 데이터 파일을 찾을 수 없습니다: {school}")
             continue
+
         df = pd.read_csv(file_path)
         df["school"] = school
         env_data[school] = df
 
     return env_data
 
-
+# ===============================
+# 생육 데이터 로딩
+# ===============================
 @st.cache_data
 def load_growth_data():
-    xlsx_name = "4개교_생육결과데이터.xlsx"
-    file_path = find_file_by_name(DATA_DIR, xlsx_name)
+    file_path = find_file_by_keywords(
+        DATA_DIR,
+        ["생육결과데이터"]
+    )
+
     if file_path is None:
         st.error("생육 결과 XLSX 파일을 찾을 수 없습니다.")
         return {}
@@ -90,7 +91,9 @@ def load_growth_data():
 
     return growth_data
 
-
+# ===============================
+# 데이터 로딩
+# ===============================
 with st.spinner("데이터 로딩 중..."):
     env_data = load_environment_data()
     growth_data = load_growth_data()
@@ -100,7 +103,7 @@ if not env_data or not growth_data:
     st.stop()
 
 # ===============================
-# 기본 정보
+# EC 정보
 # ===============================
 EC_INFO = {
     "송도고": 1.0,
@@ -109,11 +112,116 @@ EC_INFO = {
     "동산고": 8.0,
 }
 
-COLOR_MAP = {
-    "송도고": "#1f77b4",
-    "하늘고": "#2ca02c",
-    "아라고": "#ff7f0e",
-    "동산고": "#d62728",
-}
+# ===============================
+# 사이드바
+# ===============================
+st.sidebar.title("학교 선택")
+school_option = st.sidebar.selectbox(
+    "학교",
+    ["전체"] + list(EC_INFO.keys())
+)
 
-# =============================
+selected_schools = (
+    list(env_data.keys())
+    if school_option == "전체"
+    else [school_option]
+)
+
+# ===============================
+# 제목
+# ===============================
+st.title("🌱 극지식물 최적 EC 농도 연구")
+
+# ===============================
+# 탭
+# ===============================
+tab1, tab2, tab3 = st.tabs(["📖 실험 개요", "🌡️ 환경 데이터", "📊 생육 결과"])
+
+# ======================================================
+# Tab 1 실험 개요
+# ======================================================
+with tab1:
+    st.subheader("연구 목적")
+    st.markdown("""
+    4개 학교에서 서로 다른 EC 조건으로 재배된 극지식물의  
+    **생육 결과를 비교하여 최적 EC 농도를 도출**한다.
+    """)
+
+    rows = []
+    for school, ec in EC_INFO.items():
+        rows.append({
+            "학교": school,
+            "EC 목표": ec,
+            "개체 수": len(growth_data.get(school, []))
+        })
+
+    df_info = pd.DataFrame(rows)
+    st.dataframe(df_info, use_container_width=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("총 개체 수", df_info["개체 수"].sum())
+    c2.metric("평균 온도", f"{pd.concat(env_data.values())['temperature'].mean():.1f}℃")
+    c3.metric("평균 습도", f"{pd.concat(env_data.values())['humidity'].mean():.1f}%")
+    c4.metric("최적 EC", "2.0 (하늘고) ⭐")
+
+# ======================================================
+# Tab 2 환경 데이터
+# ======================================================
+with tab2:
+    env_all = pd.concat(
+        [env_data[s] for s in selected_schools],
+        ignore_index=True
+    )
+
+    avg = env_all.groupby("school").mean(numeric_only=True).reset_index()
+
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=["평균 온도", "평균 습도", "평균 pH", "EC 비교"]
+    )
+
+    fig.add_bar(x=avg["school"], y=avg["temperature"], row=1, col=1)
+    fig.add_bar(x=avg["school"], y=avg["humidity"], row=1, col=2)
+    fig.add_bar(x=avg["school"], y=avg["ph"], row=2, col=1)
+    fig.add_bar(x=avg["school"], y=avg["ec"], name="실측 EC", row=2, col=2)
+    fig.add_bar(x=list(EC_INFO.keys()), y=list(EC_INFO.values()), name="목표 EC", row=2, col=2)
+
+    fig.update_layout(height=700, font=PLOTLY_FONT)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ======================================================
+# Tab 3 생육 결과
+# ======================================================
+with tab3:
+    growth_all = pd.concat(
+        [growth_data[s] for s in selected_schools],
+        ignore_index=True
+    )
+
+    growth_all["EC"] = growth_all["school"].map(EC_INFO)
+
+    ec_avg = growth_all.groupby("EC").mean(numeric_only=True).reset_index()
+    best_ec = ec_avg.loc[ec_avg["생중량(g)"].idxmax(), "EC"]
+
+    st.metric("🥇 최고 평균 생중량 EC", f"{best_ec}")
+
+    fig = px.box(
+        growth_all,
+        x="school",
+        y="생중량(g)",
+        color="school",
+        title="학교별 생중량 분포"
+    )
+    fig.update_layout(font=PLOTLY_FONT)
+    st.plotly_chart(fig, use_container_width=True)
+
+    buffer = io.BytesIO()
+    growth_all.to_excel(buffer, index=False, engine="openpyxl")
+    buffer.seek(0)
+
+    st.download_button(
+        "생육 데이터 XLSX 다운로드",
+        data=buffer,
+        file_name="생육결과_통합.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
